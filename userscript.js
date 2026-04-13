@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Dual Control Final
 // @namespace    geofs.dual.control.final
-// @version      5.1.1.1
+// @version      5.2.0
 // @description  Host/Copilot dual control for GeoFS on HF Space
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
@@ -18,7 +18,7 @@
      * Config
      *************************************************/
     const DEFAULTS = {
-        serverOrigin: "https://tonyd365-geofs-link-flight.hf.space",
+        serverOrigin: "https://your-space-name.hf.space",
         roomId: "room001",
         password: "",
         mode: "host",
@@ -26,57 +26,25 @@
         sendIntervalMs: 40,
         pingIntervalMs: 3000,
 
-        // Channel ownership hold time
+        // Ownership hold time after a side is considered active on a channel
         localPriorityMs: 260,
 
-        // Minimum change threshold for activity detection
-        inputEpsilon: 0.0005,
+        // Relative difference thresholds
+        axisDiffThreshold: 0.03,
+        throttleDiffThreshold: 0.03,
+        trimDiffThreshold: 0.01,
 
-        // Host -> Copilot: still sync real-time position
+        // Host -> Copilot
         syncPositionToCopilot: true,
+        syncVisualInputsToCopilot: true,
 
-        // Host -> Copilot: do NOT hard-write these result values anymore
-        syncHTRToCopilot: false,
-        syncLinearVelocityToCopilot: false,
-        syncAngularVelocityToCopilot: false,
-
-        // Host -> Copilot: sync stick / input visuals only
-        syncVisualInputsToCopilot: true
+        // Remote model hiding
+        hideRemoteModels: true,
+        remoteHideIntervalMs: 1500
     };
 
-    const STORAGE_KEY = "geofs_dual_control_final_v5_1";
-    function enableDrag(el) {
-        let isDragging = false;
-        let offsetX = 0;
-        let offsetY = 0;
+    const STORAGE_KEY = "geofs_dual_control_final_v5_2";
 
-        el.addEventListener("mousedown", (e) => {
-            // 只允许从 header 拖
-            if (!e.target.closest(".gdc-header")) return;
-
-            isDragging = true;
-
-            const rect = el.getBoundingClientRect();
-            offsetX = e.clientX - rect.left;
-            offsetY = e.clientY - rect.top;
-
-            document.body.style.userSelect = "none";
-        });
-
-        document.addEventListener("mousemove", (e) => {
-            if (!isDragging) return;
-
-            el.style.left = (e.clientX - offsetX) + "px";
-            el.style.top = (e.clientY - offsetY) + "px";
-
-            el.style.right = "auto"; // 关键！否则会卡住
-        });
-
-        document.addEventListener("mouseup", () => {
-            isDragging = false;
-            document.body.style.userSelect = "";
-        });
-    }
     function loadConfig() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
@@ -125,13 +93,11 @@
         collapsed: false
     };
 
-    const HOST_LAST_VALUES = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
     const HOST_LOCAL_ACTIVITY = Object.fromEntries(CHANNEL_KEYS.map(k => [k, 0]));
-    const COPILOT_LAST_VALUES = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
     const COPILOT_LOCAL_ACTIVITY = Object.fromEntries(CHANNEL_KEYS.map(k => [k, 0]));
-
-    // On host side, remember recent copilot input changes too
     const COPILOT_REMOTE_ACTIVITY_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, 0]));
+
+    const COPILOT_LAST_VALUES_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
 
     /*************************************************
      * Basic helpers
@@ -163,12 +129,6 @@
                safeGet(() => geofs.aircraft.instance) != null;
     }
 
-    function nearlyChanged(a, b, eps = CONFIG.inputEpsilon) {
-        if (a == null || b == null) return false;
-        if (typeof a !== "number" || typeof b !== "number") return a !== b;
-        return Math.abs(a - b) > eps;
-    }
-
     function getWsUrl() {
         return CONFIG.serverOrigin.replace(/^http/, "ws") + "/ws";
     }
@@ -177,11 +137,6 @@
         return typeof v === "number" ? v.toFixed(1) : "-";
     }
 
-    /*************************************************
-     * UI
-     *************************************************/
-    let root = null;
-
     function escapeHtml(s) {
         return String(s)
             .replaceAll("&", "&amp;")
@@ -189,6 +144,34 @@
             .replaceAll(">", "&gt;")
             .replaceAll('"', "&quot;");
     }
+
+    function isNumber(v) {
+        return typeof v === "number" && Number.isFinite(v);
+    }
+
+    function getChannelThreshold(key) {
+        if (key === "throttle") return CONFIG.throttleDiffThreshold;
+        if (key === "pitchTrim" || key === "rudderTrim") return CONFIG.trimDiffThreshold;
+        if (key === "rawPitch" || key === "roll" || key === "yaw") return CONFIG.axisDiffThreshold;
+        return null;
+    }
+
+    function valuesDifferByChannel(key, a, b) {
+        if (a == null || b == null) return false;
+
+        const threshold = getChannelThreshold(key);
+        if (threshold == null) {
+            return a !== b;
+        }
+
+        if (!isNumber(a) || !isNumber(b)) return a !== b;
+        return Math.abs(a - b) > threshold;
+    }
+
+    /*************************************************
+     * UI
+     *************************************************/
+    let root = null;
 
     function createUI() {
         root = document.createElement("div");
@@ -262,15 +245,28 @@
         const style = document.createElement("style");
         style.textContent = `
             .gdc-root{
-                position:fixed;top:16px;right:16px;width:390px;z-index:999999;
-                color:#eef4ff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+                position:fixed;
+                top:16px;
+                right:16px;
+                width:390px;
+                z-index:999999;
+                color:#eef4ff;
+                font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
                 background:linear-gradient(180deg,rgba(15,20,34,.95),rgba(8,12,22,.97));
-                border:1px solid rgba(110,150,255,.22);border-radius:18px;
+                border:1px solid rgba(110,150,255,.22);
+                border-radius:18px;
                 box-shadow:0 18px 42px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05);
-                backdrop-filter:blur(12px);overflow:hidden;
-                cursor: move;
+                backdrop-filter:blur(12px);
+                overflow:hidden;
             }
-            .gdc-header{display:flex;align-items:center;justify-content:space-between;padding:14px;border-bottom:1px solid rgba(255,255,255,.05);}
+            .gdc-header{
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                padding:14px;
+                border-bottom:1px solid rgba(255,255,255,.05);
+                cursor:move;
+            }
             .gdc-title{font-size:16px;font-weight:800}
             #gdc-body{padding:14px}
             .gdc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -278,36 +274,57 @@
             .gdc-full{grid-column:1 / -1}
             .gdc-field span{font-size:11px;opacity:.78}
             .gdc-field input,.gdc-field select{
-                width:100%;height:38px;border-radius:12px;border:1px solid rgba(255,255,255,.08);
-                background:rgba(255,255,255,.05);color:#eef4ff;padding:0 12px;outline:none;
+                width:100%;
+                height:38px;
+                border-radius:12px;
+                border:1px solid rgba(255,255,255,.08);
+                background:rgba(255,255,255,.05);
+                color:#eef4ff;
+                padding:0 12px;
+                outline:none;
             }
             .gdc-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
             .gdc-btn{
-                height:38px;border:none;border-radius:12px;padding:0 14px;font-weight:700;cursor:pointer;
-                color:#eef4ff;background:rgba(255,255,255,.08)
+                height:38px;
+                border:none;
+                border-radius:12px;
+                padding:0 14px;
+                font-weight:700;
+                cursor:pointer;
+                color:#eef4ff;
+                background:rgba(255,255,255,.08)
             }
             .gdc-btn.ghost{background:rgba(255,255,255,.06)}
             .gdc-btn.primary{background:linear-gradient(180deg,#4b7dff,#355ee8)}
             .gdc-btn.danger{background:linear-gradient(180deg,#e45b6e,#c84558)}
             .gdc-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
             .gdc-card{
-                background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);
-                border-radius:14px;padding:10px;
+                background:rgba(255,255,255,.04);
+                border:1px solid rgba(255,255,255,.06);
+                border-radius:14px;
+                padding:10px;
             }
             .gdc-card .k{font-size:11px;opacity:.72;margin-bottom:5px}
             .gdc-card .v{font-size:14px;font-weight:800;word-break:break-all}
             .gdc-telemetry{
-                margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.04);
-                border:1px solid rgba(255,255,255,.06);font-size:12px;line-height:1.5
+                margin-top:12px;
+                padding:10px 12px;
+                border-radius:12px;
+                background:rgba(255,255,255,.04);
+                border:1px solid rgba(255,255,255,.06);
+                font-size:12px;
+                line-height:1.5
             }
             .gdc-sub{font-size:12px;opacity:.75;margin-bottom:6px}
-            .gdc-green{color:#8df0a8}.gdc-red{color:#ff9a9a}.gdc-yellow{color:#ffd77a}
+            .gdc-green{color:#8df0a8}
+            .gdc-red{color:#ff9a9a}
+            .gdc-yellow{color:#ffd77a}
         `;
         document.documentElement.appendChild(style);
         document.body.appendChild(root);
-        enableDrag(root);
 
         bindUI();
+        enableDrag(root);
         updateStatus();
     }
 
@@ -319,6 +336,7 @@
             const hidden = body.style.display === "none";
             body.style.display = hidden ? "block" : "none";
             toggleBtn.textContent = hidden ? "Collapse" : "Expand";
+            STATE.collapsed = !hidden;
         });
 
         root.querySelector("#gdc-save").addEventListener("click", () => {
@@ -336,6 +354,35 @@
 
         root.querySelector("#gdc-disconnect").addEventListener("click", () => {
             disconnect();
+        });
+    }
+
+    function enableDrag(el) {
+        let isDragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        el.addEventListener("mousedown", (e) => {
+            if (!e.target.closest(".gdc-header")) return;
+
+            isDragging = true;
+            const rect = el.getBoundingClientRect();
+            offsetX = e.clientX - rect.left;
+            offsetY = e.clientY - rect.top;
+            document.body.style.userSelect = "none";
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (!isDragging) return;
+
+            el.style.left = `${e.clientX - offsetX}px`;
+            el.style.top = `${e.clientY - offsetY}px`;
+            el.style.right = "auto";
+        });
+
+        document.addEventListener("mouseup", () => {
+            isDragging = false;
+            document.body.style.userSelect = "";
         });
     }
 
@@ -358,7 +405,8 @@
     function updateStatus() {
         if (!root) return;
 
-        setStatus("#gdc-st-conn",
+        setStatus(
+            "#gdc-st-conn",
             !STATE.connected ? "Disconnected" : (STATE.joined ? "Connected" : "Connected, not joined"),
             !STATE.connected ? "gdc-red" : "gdc-green"
         );
@@ -454,7 +502,6 @@
             if (msg.type === "copilot_controls" && CONFIG.mode === "host") {
                 STATE.latestCopilotControls = msg.data || null;
                 STATE.latestCopilotControlsTs = now();
-
                 updateCopilotRemoteActivityOnHost(msg.data || null);
                 return;
             }
@@ -522,9 +569,7 @@
     }
 
     /*************************************************
-     * Host packet:
-     * send position + telemetry + visual input motions
-     * but do not force direct control values onto copilot
+     * Host packet
      *************************************************/
     function getHostStatePacket() {
         const ac = safeGet(() => geofs.aircraft.instance, null);
@@ -538,7 +583,7 @@
         return {
             llaLocation: Array.isArray(lla) ? [...lla] : null,
 
-            // keep sending these as telemetry/reference only
+            // telemetry/reference only
             htr: Array.isArray(htr) ? [...htr] : null,
             linearVelocity: Array.isArray(lv) ? [...lv] : null,
             angularVelocity: Array.isArray(av) ? [...av] : null,
@@ -553,7 +598,6 @@
                 speed: safeGet(() => geofs.animation.values.kias, null)
             },
 
-            // Visual-only sync of stick / lever motions
             visualInputs: CONFIG.syncVisualInputsToCopilot ? {
                 rawPitch: safeGet(() => controls.rawPitch, 0),
                 roll: safeGet(() => controls.roll, 0),
@@ -564,35 +608,31 @@
     }
 
     /*************************************************
-     * Activity detection
+     * Relative-position ownership detection
      *************************************************/
-    function updateHostLocalActivity() {
-        const cur = getLocalDirectControls();
+    function updateHostOwnershipAgainstCopilot() {
+        const local = getLocalDirectControls();
+        const remote = STATE.latestCopilotControls || null;
+        if (!remote) return;
+
         const t = now();
-
         for (const key of CHANNEL_KEYS) {
-            const oldVal = HOST_LAST_VALUES[key];
-            const newVal = cur[key];
-
-            if (oldVal !== null && nearlyChanged(oldVal, newVal)) {
+            if (valuesDifferByChannel(key, local[key], remote[key])) {
                 HOST_LOCAL_ACTIVITY[key] = t;
             }
-            HOST_LAST_VALUES[key] = newVal;
         }
     }
 
-    function updateCopilotLocalActivity() {
-        const cur = getLocalDirectControls();
+    function updateCopilotOwnershipAgainstHostVisuals() {
+        const local = getLocalDirectControls();
+        const remote = STATE.latestHostState?.visualInputs || null;
+        if (!remote) return;
+
         const t = now();
-
-        for (const key of CHANNEL_KEYS) {
-            const oldVal = COPILOT_LAST_VALUES[key];
-            const newVal = cur[key];
-
-            if (oldVal !== null && nearlyChanged(oldVal, newVal)) {
+        for (const key of ["rawPitch", "roll", "yaw", "throttle"]) {
+            if (valuesDifferByChannel(key, local[key], remote[key])) {
                 COPILOT_LOCAL_ACTIVITY[key] = t;
             }
-            COPILOT_LAST_VALUES[key] = newVal;
         }
     }
 
@@ -601,10 +641,14 @@
         const t = now();
 
         for (const key of CHANNEL_KEYS) {
-            const v = packet[key];
-            if (v != null) {
+            const newVal = packet[key];
+            const oldVal = COPILOT_LAST_VALUES_ON_HOST[key];
+
+            if (oldVal !== null && valuesDifferByChannel(key, oldVal, newVal)) {
                 COPILOT_REMOTE_ACTIVITY_ON_HOST[key] = t;
             }
+
+            COPILOT_LAST_VALUES_ON_HOST[key] = newVal;
         }
     }
 
@@ -621,7 +665,7 @@
     }
 
     /*************************************************
-     * Host applies copilot controls with channel ownership
+     * Host applies copilot controls
      *************************************************/
     function applyCopilotControlsToHost(packet) {
         if (!packet || !isGeoFSReady()) return;
@@ -663,10 +707,7 @@
     function tryApplyControlToHost(key, value, applyFn) {
         if (value == null) return;
 
-        // If host recently touched this channel, host wins
         if (hostLocalOwnsChannel(key)) return;
-
-        // Otherwise copilot may own it
         if (!copilotRecentlyTouchedChannelOnHost(key)) return;
 
         try {
@@ -677,9 +718,7 @@
     }
 
     /*************************************************
-     * Copilot:
-     * apply host non-direct-control values only
-     * + visual stick motion sync
+     * Copilot applies host state
      *************************************************/
     function applyHostStateToCopilot(packet) {
         if (!packet || !isGeoFSReady()) return;
@@ -688,37 +727,15 @@
         if (!ac) return;
 
         try {
-            // 1) Position sync stays
             if (CONFIG.syncPositionToCopilot && Array.isArray(packet.llaLocation)) {
                 ac.llaLocation = [...packet.llaLocation];
-                if (typeof ac.place === "function" && Array.isArray(packet.htr)) {
+
+                // Preserve local attitude by re-placing with current local HTR if possible
+                if (typeof ac.place === "function") {
+                    const currentHtr = safeGet(() => ac.htr, [0, 0, 0]);
                     try {
-                        ac.place([...packet.llaLocation], [...packet.htr]);
+                        ac.place([...packet.llaLocation], Array.isArray(currentHtr) ? [...currentHtr] : [0, 0, 0]);
                     } catch (_) {}
-                }
-            }
-
-            // 2) Do NOT hard-write HTR / velocities by default anymore
-            if (CONFIG.syncHTRToCopilot && Array.isArray(packet.htr)) {
-                ac.htr = [...packet.htr];
-            }
-
-            const rb = safeGet(() => ac.rigidBody, null);
-            if (rb) {
-                if (CONFIG.syncLinearVelocityToCopilot && Array.isArray(packet.linearVelocity)) {
-                    if (typeof rb.setLinearVelocity === "function") {
-                        rb.setLinearVelocity([...packet.linearVelocity]);
-                    } else if (rb.v_linear) {
-                        rb.v_linear = [...packet.linearVelocity];
-                    }
-                }
-
-                if (CONFIG.syncAngularVelocityToCopilot && Array.isArray(packet.angularVelocity)) {
-                    if (typeof rb.setAngularVelocity === "function") {
-                        rb.setAngularVelocity([...packet.angularVelocity]);
-                    } else if (rb.v_angular) {
-                        rb.v_angular = [...packet.angularVelocity];
-                    }
                 }
             }
 
@@ -729,8 +746,6 @@
                 }
             }
 
-            // 3) Sync joystick motions visually only
-            // Do NOT write controls.* here
             if (CONFIG.syncVisualInputsToCopilot && packet.visualInputs) {
                 applyVisualInputsOnly(packet.visualInputs);
             }
@@ -742,30 +757,127 @@
     function applyVisualInputsOnly(visualInputs) {
         if (!visualInputs) return;
 
-        // If copilot is actively touching a channel, do not overwrite its local visual feel
         const av = safeGet(() => geofs.animation.values, null);
         if (!av) return;
 
         try {
-            if (!copilotLocalOwnsChannel("rawPitch") && typeof visualInputs.rawPitch === "number") {
+            if (!copilotLocalOwnsChannel("rawPitch") && isNumber(visualInputs.rawPitch)) {
                 if (typeof av.pitch !== "undefined") av.pitch = visualInputs.rawPitch;
                 if (typeof av.atilt !== "undefined") av.atilt = visualInputs.rawPitch;
             }
 
-            if (!copilotLocalOwnsChannel("roll") && typeof visualInputs.roll === "number") {
+            if (!copilotLocalOwnsChannel("roll") && isNumber(visualInputs.roll)) {
                 if (typeof av.roll !== "undefined") av.roll = visualInputs.roll;
             }
 
-            if (!copilotLocalOwnsChannel("yaw") && typeof visualInputs.yaw === "number") {
+            if (!copilotLocalOwnsChannel("yaw") && isNumber(visualInputs.yaw)) {
                 if (typeof av.yaw !== "undefined") av.yaw = visualInputs.yaw;
             }
 
-            if (!copilotLocalOwnsChannel("throttle") && typeof visualInputs.throttle === "number") {
+            if (!copilotLocalOwnsChannel("throttle") && isNumber(visualInputs.throttle)) {
                 if (typeof av.throttle !== "undefined") av.throttle = visualInputs.throttle;
             }
         } catch (e) {
             warn("applyVisualInputsOnly failed:", e);
         }
+    }
+
+    /*************************************************
+     * Best-effort remote model hiding
+     *************************************************/
+    function hideRemoteAircraftModels() {
+        if (!CONFIG.hideRemoteModels || !isGeoFSReady()) return;
+
+        const localAircraft = safeGet(() => geofs.aircraft.instance, null);
+        if (!localAircraft) return;
+
+        const candidates = collectAircraftCandidates();
+        for (const aircraft of candidates) {
+            if (!aircraft || aircraft === localAircraft) continue;
+            hideAircraftModel(aircraft);
+        }
+    }
+
+    function collectAircraftCandidates() {
+        const out = new Set();
+
+        const maybeArrays = [
+            safeGet(() => geofs.aircraftList, null),
+            safeGet(() => geofs.aircrafts, null),
+            safeGet(() => geofs.api?.aircraftList, null),
+            safeGet(() => geofs.api?.aircrafts, null),
+            safeGet(() => geofs.multiplayer?.aircrafts, null),
+            safeGet(() => geofs.multiplayer?.trafficAircraftList, null),
+            safeGet(() => geofs.traffic?.aircraftList, null)
+        ];
+
+        for (const entry of maybeArrays) {
+            if (Array.isArray(entry)) {
+                entry.forEach(x => out.add(x));
+            } else if (entry && typeof entry === "object") {
+                Object.values(entry).forEach(x => out.add(x));
+            }
+        }
+
+        return Array.from(out);
+    }
+
+    function hideAircraftModel(aircraft) {
+        const objects = [
+            safeGet(() => aircraft.object3d, null),
+            safeGet(() => aircraft.model, null),
+            safeGet(() => aircraft._model, null),
+            safeGet(() => aircraft.aircraftObject, null),
+            safeGet(() => aircraft.parts?.root, null),
+            safeGet(() => aircraft.root, null)
+        ].filter(Boolean);
+
+        for (const obj of objects) {
+            tryHideObjectRecursive(obj);
+        }
+    }
+
+    function tryHideObjectRecursive(obj) {
+        try {
+            if (typeof obj.visible !== "undefined") {
+                obj.visible = false;
+            }
+        } catch (_) {}
+
+        try {
+            if (obj.material) {
+                setMaterialTransparent(obj.material);
+            }
+        } catch (_) {}
+
+        try {
+            if (typeof obj.traverse === "function") {
+                obj.traverse((child) => {
+                    try {
+                        if (typeof child.visible !== "undefined") {
+                            child.visible = false;
+                        }
+                    } catch (_) {}
+
+                    try {
+                        if (child.material) {
+                            setMaterialTransparent(child.material);
+                        }
+                    } catch (_) {}
+                });
+            }
+        } catch (_) {}
+    }
+
+    function setMaterialTransparent(material) {
+        if (Array.isArray(material)) {
+            material.forEach(setMaterialTransparent);
+            return;
+        }
+        if (!material) return;
+        material.transparent = true;
+        material.opacity = 0;
+        material.depthWrite = false;
     }
 
     /*************************************************
@@ -786,7 +898,7 @@
             if (CONFIG.mode !== "host") return;
             if (!STATE.joined || !isGeoFSReady()) return;
 
-            updateHostLocalActivity();
+            updateHostOwnershipAgainstCopilot();
 
             const packet = getHostStatePacket();
             if (!packet) return;
@@ -803,7 +915,7 @@
             if (CONFIG.mode !== "copilot") return;
             if (!STATE.joined || !isGeoFSReady()) return;
 
-            updateCopilotLocalActivity();
+            updateCopilotOwnershipAgainstHostVisuals();
 
             const packet = getLocalDirectControls();
             wsSend({
@@ -816,7 +928,7 @@
     function startHostApplyLoop() {
         function tick() {
             if (CONFIG.mode === "host" && STATE.joined && isGeoFSReady() && STATE.latestCopilotControls) {
-                updateHostLocalActivity();
+                updateHostOwnershipAgainstCopilot();
                 applyCopilotControlsToHost(STATE.latestCopilotControls);
             }
             requestAnimationFrame(tick);
@@ -827,12 +939,19 @@
     function startCopilotApplyLoop() {
         function tick() {
             if (CONFIG.mode === "copilot" && STATE.joined && isGeoFSReady() && STATE.latestHostState) {
-                updateCopilotLocalActivity();
+                updateCopilotOwnershipAgainstHostVisuals();
                 applyHostStateToCopilot(STATE.latestHostState);
             }
             requestAnimationFrame(tick);
         }
         tick();
+    }
+
+    function startRemoteModelHideLoop() {
+        setInterval(() => {
+            if (!STATE.joined || !isGeoFSReady()) return;
+            hideRemoteAircraftModels();
+        }, CONFIG.remoteHideIntervalMs);
     }
 
     function startUiLoop() {
@@ -853,6 +972,7 @@
             startCopilotSendLoop();
             startHostApplyLoop();
             startCopilotApplyLoop();
+            startRemoteModelHideLoop();
             startUiLoop();
 
             log("UI ready");
