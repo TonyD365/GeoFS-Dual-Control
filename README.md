@@ -76,7 +76,7 @@ ws://localhost:7860/ws
 
 1. Install Tampermonkey
 2. Create a new script
-3. Paste `geofs_dual_control.user.js`
+3. Paste `userscript.js`
 4. Save
 
 ---
