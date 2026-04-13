@@ -304,6 +304,7 @@
         `;
         document.documentElement.appendChild(style);
         document.body.appendChild(root);
+        enableDrag(root);
 
         bindUI();
         updateStatus();
