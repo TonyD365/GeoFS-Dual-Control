@@ -15,7 +15,7 @@
      * Config
      *************************************************/
     const DEFAULTS = {
-        serverOrigin: "https://your-space-name.hf.space",
+        serverOrigin: "https://tonyd365-geofs-link-flight.hf.space",
         roomId: "room001",
         password: "",
         mode: "host",
