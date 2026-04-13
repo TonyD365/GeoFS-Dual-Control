@@ -44,7 +44,38 @@
     };
 
     const STORAGE_KEY = "geofs_dual_control_final_v5_1";
+    function enableDrag(el) {
+        let isDragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
 
+        el.addEventListener("mousedown", (e) => {
+            // 只允许从 header 拖
+            if (!e.target.closest(".gdc-header")) return;
+
+            isDragging = true;
+
+            const rect = el.getBoundingClientRect();
+            offsetX = e.clientX - rect.left;
+            offsetY = e.clientY - rect.top;
+
+            document.body.style.userSelect = "none";
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (!isDragging) return;
+
+            el.style.left = (e.clientX - offsetX) + "px";
+            el.style.top = (e.clientY - offsetY) + "px";
+
+            el.style.right = "auto"; // 关键！否则会卡住
+        });
+
+        document.addEventListener("mouseup", () => {
+            isDragging = false;
+            document.body.style.userSelect = "";
+        });
+    }
     function loadConfig() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
