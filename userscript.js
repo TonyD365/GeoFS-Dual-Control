@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         GeoFS Dual Control Final
 // @namespace    geofs.dual.control.final
-// @version      5.1.0
+// @version      5.1.1
 // @description  Host/Copilot dual control for GeoFS on HF Space
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
 // @grant        none
+// @downloadURL  https://raw.githubusercontent.com/TonyD365/GeoFS-Dual-Control/refs/heads/main/userscript.js
+// @updateURL    https://raw.githubusercontent.com/TonyD365/GeoFS-Dual-Control/refs/heads/main/userscript.js
 // ==/UserScript==
 
 (function () {
