@@ -41,6 +41,7 @@ Copilot ---> Server ---> Host
 │
 ├── server.js           # WebSocket relay server
 ├── userscript.js       # Tampermonkey script
+├── package.json
 ```
 
 ---
