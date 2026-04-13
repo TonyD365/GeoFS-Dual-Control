@@ -236,6 +236,7 @@
                 border:1px solid rgba(110,150,255,.22);border-radius:18px;
                 box-shadow:0 18px 42px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05);
                 backdrop-filter:blur(12px);overflow:hidden;
+                cursor: move;
             }
             .gdc-header{display:flex;align-items:center;justify-content:space-between;padding:14px;border-bottom:1px solid rgba(255,255,255,.05);}
             .gdc-title{font-size:16px;font-weight:800}
