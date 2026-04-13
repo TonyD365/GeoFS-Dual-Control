@@ -40,11 +40,7 @@ Copilot ---> Server ---> Host
 /project-root
 │
 ├── server.js           # WebSocket relay server
-├── package.json        # Node.js dependencies
-├── Dockerfile          # Deployment (optional)
-│
-└── userscript/
-    └── geofs_dual_control.user.js   # Tampermonkey script
+├── userscript.js       # Tampermonkey script
 ```
 
 ---
