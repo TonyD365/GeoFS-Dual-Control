@@ -1,3 +1,7 @@
+## Please note: If the mobile device is the host device, the host device will not be able to control the throttle! Could someone please help me fix this? Thank you!
+
+---
+
 # ✈️ GeoFS Dual Control
 
 A real-time dual control system for GeoFS using a Tampermonkey userscript and a WebSocket server.
