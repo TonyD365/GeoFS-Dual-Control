@@ -82,6 +82,10 @@ ws://localhost:7860/ws
 3. Paste `userscript.js`
 4. Save
 
+#### Step on mobile user:
+1. Create a bookmark on **Chrome** broser
+2. Paste `mobile_userscript.js`
+3. save
 ---
 
 ### 3. Configure in GeoFS
