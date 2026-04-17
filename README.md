@@ -52,7 +52,7 @@ Copilot ---> Server ---> Host
 
 ## 🔧 Setup
 
-### 1. Run the server
+### 1. Run the server or you can use our server (https://tonyd365-geofs-link-flight.hf.space)
 
 ```bash
 npm install
@@ -70,6 +70,8 @@ WebSocket endpoint:
 ```text
 ws://localhost:7860/ws
 ```
+
+### If you want to use our server on Hugging Face, you can skip this step.
 
 ---
 
@@ -94,6 +96,8 @@ Fill in:
     http://localhost:7860
     ```
   - Or hosted (HF Space, etc.)
+ 
+### If you want to use my server on Hugging Face, type "https://tonyd365-geofs-link-flight.hf.space" in Server URL.
 
 - **Room ID**
   - Any string (must match between users)
