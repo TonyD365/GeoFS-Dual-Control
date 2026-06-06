@@ -359,32 +359,70 @@
     }
 
     function enableDrag(el) {
+        const header = el.querySelector(".gdc-header");
+        if (!header) return;
+
         let isDragging = false;
         let offsetX = 0;
         let offsetY = 0;
 
-        el.addEventListener("mousedown", (e) => {
-            if (!e.target.closest(".gdc-header")) return;
+        function onPointerDown(e) {
+            // 点按钮 / 输入框时不触发拖动
+            if (e.target.closest("button, input, select, textarea")) return;
+            // 只响应左键
+            if (e.button !== undefined && e.button !== 0) return;
 
             isDragging = true;
             const rect = el.getBoundingClientRect();
             offsetX = e.clientX - rect.left;
             offsetY = e.clientY - rect.top;
-            document.body.style.userSelect = "none";
-        });
 
-        document.addEventListener("mousemove", (e) => {
+            // 把 right:16px 改成 left 定位，避免拖动跳一下
+            el.style.left = `${rect.left}px`;
+            el.style.top = `${rect.top}px`;
+            el.style.right = "auto";
+
+            document.body.style.userSelect = "none";
+
+            // 关键:把指针捕获到 header,后续 move/up 不会被 GeoFS 抢走
+            try { header.setPointerCapture(e.pointerId); } catch (_) {}
+
+            // 关键:阻止 GeoFS 收到这个 mousedown
+            e.stopPropagation();
+            e.preventDefault();
+        }
+
+        function onPointerMove(e) {
             if (!isDragging) return;
+            e.stopPropagation();
+            e.preventDefault();
 
             el.style.left = `${e.clientX - offsetX}px`;
-            el.style.top = `${e.clientY - offsetY}px`;
-            el.style.right = "auto";
-        });
+            el.style.top  = `${e.clientY - offsetY}px`;
+        }
 
-        document.addEventListener("mouseup", () => {
+        function onPointerUp(e) {
+            if (!isDragging) return;
             isDragging = false;
             document.body.style.userSelect = "";
-        });
+            try { header.releasePointerCapture(e.pointerId); } catch (_) {}
+            e.stopPropagation();
+        }
+
+        // 用 capture 阶段挂在 header 上,优先级高于 GeoFS 的 document 监听
+        header.addEventListener("pointerdown", onPointerDown, true);
+        header.addEventListener("pointermove", onPointerMove, true);
+        header.addEventListener("pointerup", onPointerUp, true);
+        header.addEventListener("pointercancel", onPointerUp, true);
+
+        // 顺手把整个面板内的 mouse/wheel 都拦下来,
+        // 防止你在面板里操作时不小心驱动了飞机
+        const swallow = (e) => e.stopPropagation();
+        el.addEventListener("mousedown", swallow, true);
+        el.addEventListener("mouseup", swallow, true);
+        el.addEventListener("mousemove", swallow, true);
+        el.addEventListener("wheel", swallow, true);
+        el.addEventListener("contextmenu", swallow, true);
     }
 
     function readConfigFromUI() {
