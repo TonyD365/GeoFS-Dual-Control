@@ -28,7 +28,8 @@ const wss = new WebSocket.Server({
 //   copilots: Set<WebSocket>,
 //   password: string,
 //   latestHostState: object|null,
-//   latestCopilotControls: object|null
+//   latestCopilotControls: object|null,
+//   latestFlightPlan: array|null
 // }
 const rooms = new Map();
 
@@ -45,7 +46,8 @@ function getOrCreateRoom(roomId) {
       copilots: new Set(),
       password: "",
       latestHostState: null,
-      latestCopilotControls: null
+      latestCopilotControls: null,
+      latestFlightPlan: null
     });
   }
   return rooms.get(roomId);
@@ -136,6 +138,16 @@ wss.on("connection", (ws) => {
         role
       });
 
+      // Newly joined copilot gets the latest cached flight plan immediately,
+      // so they don't have to wait for the host to edit it again.
+      if (role === "copilot" && Array.isArray(room.latestFlightPlan)) {
+        safeSend(ws, {
+          type: "flight_plan",
+          ts: Date.now(),
+          data: room.latestFlightPlan
+        });
+      }
+
       broadcastRoomState(roomId);
       return;
     }
@@ -181,6 +193,19 @@ wss.on("connection", (ws) => {
           ts: Date.now(),
           data: room.latestCopilotControls
         });
+      }
+      return;
+    }
+
+    if (msg.type === "flight_plan" && ws._role === "host") {
+      room.latestFlightPlan = Array.isArray(msg.data) ? msg.data : null;
+      const payload = {
+        type: "flight_plan",
+        ts: Date.now(),
+        data: room.latestFlightPlan
+      };
+      for (const cp of room.copilots) {
+        safeSend(cp, payload);
       }
       return;
     }
