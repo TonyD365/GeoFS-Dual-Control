@@ -6,6 +6,7 @@
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
 // @match        https://www.geo-fs.com/geofs.php?v=3.9
+// @match        https://beta.geo-fs.com/*
 // @grant        none
 // @downloadURL  https://cdn.jsdelivr.net/gh/TonyD365/GeoFS-Dual-Control@main/userscript.js
 // @updateURL    https://cdn.jsdelivr.net/gh/TonyD365/GeoFS-Dual-Control@main/userscript.js
