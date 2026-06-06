@@ -8,8 +8,8 @@ A real-time dual control system for GeoFS using a Tampermonkey userscript and a 
 
 This project allows **two or more players** to control the same aircraft:
 
-- 👨‍✈️ **Host (Pilot)** — main control authority  
-- 🧑‍✈️ **Copilot** — assists with real control inputs  
+- 👨‍✈️ **Host (Pilot)** — main control authority
+- 🧑‍✈️ **Copilot** — assists with real control inputs
 
 ---
 
@@ -20,6 +20,7 @@ This project allows **two or more players** to control the same aircraft:
 - Conflict-safe control system (no fighting inputs)
 - Smooth synchronization of aircraft position
 - Visual stick movement sync (without overriding control values)
+- **Flight plan sync** — Copilot forcibly mirrors Host's flight plan (read-only on Copilot side)
 - Works entirely in browser (Tampermonkey)
 
 ---
@@ -83,9 +84,11 @@ ws://localhost:7860/ws
 4. Save
 
 #### Step on mobile user:
+
 1. Create a bookmark on **Chrome** broser
 2. Paste `mobile_userscript.js`
 3. save
+
 ---
 
 ### 3. Configure in GeoFS
@@ -100,15 +103,13 @@ Fill in:
     http://localhost:7860
     ```
   - Or hosted (HF Space, etc.)
- 
+
 ### If you want to use my server on Hugging Face, type "https://tonyd365-geofs-link-flight.hf.space" in Server URL.
 
 - **Room ID**
   - Any string (must match between users)
-
 - **Password**
   - Optional
-
 - **Mode**
   - `Host` or `Copilot`
 
@@ -129,6 +130,7 @@ Fill in:
   - Aircraft position (authoritative)
   - Telemetry data
   - Visual control inputs (stick movement only)
+  - Flight plan (waypoints, auto-pushed on change)
 
 ### Copilot → Host
 
@@ -153,6 +155,20 @@ Fill in:
 - Still receives position updates from host
 - Visual stick movement is synced, but:
   - control values are NOT overwritten
+
+---
+
+## 🗺️ Flight Plan Sync
+
+- Only the **Host** can edit the flight plan.
+- Host changes are pushed to Copilot within ~1 second (only when waypoints actually change).
+- On the Copilot side:
+  - The NAV panel's flight plan editor is **disabled** (greyed out, non-clickable).
+  - Any local change is overwritten by the Host's version every second.
+- Waypoint format follows the official GeoFS JSON schema
+  (`ident`, `type`, `lat`, `lon`, `alt`, `spd`, `heading`).
+- Newly joined Copilots receive the current flight plan immediately on join.
+- To disable: set `syncFlightPlanToCopilot: false` in the script config.
 
 ---
 
@@ -197,6 +213,18 @@ Fill in:
 }
 ```
 
+### Flight Plan (Host → Copilot)
+
+```json
+{
+  "type": "flight_plan",
+  "data": [
+    { "ident": "KSFO", "type": "DPT", "lat": 37.62872, "lon": -122.39335, "alt": 0, "heading": 117.9 },
+    { "ident": "KLAX", "type": "DST", "lat": 33.93365, "lon": -118.41903, "alt": 0, "heading": 82.95 }
+  ]
+}
+```
+
 ---
 
 ## ⚠️ Limitations
@@ -204,6 +232,7 @@ Fill in:
 - Depends on GeoFS internal APIs
 - May break if GeoFS updates
 - Not an official GeoFS feature
+- Flight plan sync depends on `geofs.flightPlan` internal structure; if GeoFS renames it, sync will silently stop until the script is updated.
 
 ---
 
