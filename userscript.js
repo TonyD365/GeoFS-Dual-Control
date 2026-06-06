@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Dual Control Final
 // @namespace    geofs.dual.control.final
-// @version      5.3.0
+// @version      5.3.1
 // @description  Host/Copilot dual control for GeoFS on HF Space (+ flight plan sync)
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
@@ -278,6 +278,9 @@
                 padding:14px;
                 border-bottom:1px solid rgba(255,255,255,.05);
                 cursor:move;
+                user-select:none;
+                -webkit-user-select:none;
+                touch-action:none;
             }
             .gdc-title{font-size:16px;font-weight:800}
             #gdc-body{padding:14px}
@@ -370,32 +373,69 @@
     }
 
     function enableDrag(el) {
+        const header = el.querySelector(".gdc-header");
+        if (!header) return;
+
         let isDragging = false;
         let offsetX = 0;
         let offsetY = 0;
 
-        el.addEventListener("mousedown", (e) => {
-            if (!e.target.closest(".gdc-header")) return;
+        function onPointerDown(e) {
+            // Don't start drag when interacting with form controls / buttons
+            if (e.target.closest("button, input, select, textarea")) return;
+            // Left button only
+            if (e.button !== undefined && e.button !== 0) return;
 
             isDragging = true;
             const rect = el.getBoundingClientRect();
             offsetX = e.clientX - rect.left;
             offsetY = e.clientY - rect.top;
-            document.body.style.userSelect = "none";
-        });
 
-        document.addEventListener("mousemove", (e) => {
+            // Switch from right-anchored to left-anchored so the first frame doesn't jump
+            el.style.left = `${rect.left}px`;
+            el.style.top = `${rect.top}px`;
+            el.style.right = "auto";
+
+            document.body.style.userSelect = "none";
+
+            // Capture the pointer so subsequent move/up events can't be hijacked by GeoFS
+            try { header.setPointerCapture(e.pointerId); } catch (_) {}
+
+            // Prevent GeoFS from receiving this mousedown
+            e.stopPropagation();
+            e.preventDefault();
+        }
+
+        function onPointerMove(e) {
             if (!isDragging) return;
+            e.stopPropagation();
+            e.preventDefault();
 
             el.style.left = `${e.clientX - offsetX}px`;
-            el.style.top = `${e.clientY - offsetY}px`;
-            el.style.right = "auto";
-        });
+            el.style.top  = `${e.clientY - offsetY}px`;
+        }
 
-        document.addEventListener("mouseup", () => {
+        function onPointerUp(e) {
+            if (!isDragging) return;
             isDragging = false;
             document.body.style.userSelect = "";
-        });
+            try { header.releasePointerCapture(e.pointerId); } catch (_) {}
+            e.stopPropagation();
+        }
+
+        // Capture-phase listeners on the header beat GeoFS's document-level listeners
+        header.addEventListener("pointerdown", onPointerDown, true);
+        header.addEventListener("pointermove", onPointerMove, true);
+        header.addEventListener("pointerup", onPointerUp, true);
+        header.addEventListener("pointercancel", onPointerUp, true);
+
+        // Swallow mouse/wheel events on the whole panel so they don't drive the aircraft
+        const swallow = (e) => e.stopPropagation();
+        el.addEventListener("mousedown", swallow, true);
+        el.addEventListener("mouseup", swallow, true);
+        el.addEventListener("mousemove", swallow, true);
+        el.addEventListener("wheel", swallow, true);
+        el.addEventListener("contextmenu", swallow, true);
     }
 
     function readConfigFromUI() {
