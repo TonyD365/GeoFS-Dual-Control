@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GeoFS Dual Control Final
 // @namespace    geofs.dual.control.final
-// @version      5.2.2
-// @description  Host/Copilot dual control for GeoFS on HF Space
+// @version      5.3.0
+// @description  Host/Copilot dual control for GeoFS on HF Space (+ flight plan sync)
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
 // @match        https://www.geo-fs.com/geofs.php?v=3.9
@@ -41,7 +41,13 @@
 
         // Remote model hiding
         hideRemoteModels: true,
-        remoteHideIntervalMs: 1500
+        remoteHideIntervalMs: 1500,
+
+        // Flight plan sync (Host -> Copilot, forced overwrite)
+        syncFlightPlanToCopilot: true,
+        flightPlanSendIntervalMs: 800,
+        flightPlanApplyIntervalMs: 1000,
+        lockCopilotFlightPlanUi: true
     };
 
     const STORAGE_KEY = "geofs_dual_control_final_v5_2";
@@ -99,6 +105,11 @@
     const COPILOT_REMOTE_ACTIVITY_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, 0]));
 
     const COPILOT_LAST_VALUES_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
+
+    // Flight plan sync state
+    let LAST_FLIGHT_PLAN_HASH_SENT = "";
+    let LATEST_RECEIVED_FLIGHT_PLAN = null;
+    let LATEST_RECEIVED_FLIGHT_PLAN_TS = 0;
 
     /*************************************************
      * Basic helpers
@@ -359,70 +370,32 @@
     }
 
     function enableDrag(el) {
-        const header = el.querySelector(".gdc-header");
-        if (!header) return;
-
         let isDragging = false;
         let offsetX = 0;
         let offsetY = 0;
 
-        function onPointerDown(e) {
-            // 点按钮 / 输入框时不触发拖动
-            if (e.target.closest("button, input, select, textarea")) return;
-            // 只响应左键
-            if (e.button !== undefined && e.button !== 0) return;
+        el.addEventListener("mousedown", (e) => {
+            if (!e.target.closest(".gdc-header")) return;
 
             isDragging = true;
             const rect = el.getBoundingClientRect();
             offsetX = e.clientX - rect.left;
             offsetY = e.clientY - rect.top;
-
-            // 把 right:16px 改成 left 定位，避免拖动跳一下
-            el.style.left = `${rect.left}px`;
-            el.style.top = `${rect.top}px`;
-            el.style.right = "auto";
-
             document.body.style.userSelect = "none";
+        });
 
-            // 关键:把指针捕获到 header,后续 move/up 不会被 GeoFS 抢走
-            try { header.setPointerCapture(e.pointerId); } catch (_) {}
-
-            // 关键:阻止 GeoFS 收到这个 mousedown
-            e.stopPropagation();
-            e.preventDefault();
-        }
-
-        function onPointerMove(e) {
+        document.addEventListener("mousemove", (e) => {
             if (!isDragging) return;
-            e.stopPropagation();
-            e.preventDefault();
 
             el.style.left = `${e.clientX - offsetX}px`;
-            el.style.top  = `${e.clientY - offsetY}px`;
-        }
+            el.style.top = `${e.clientY - offsetY}px`;
+            el.style.right = "auto";
+        });
 
-        function onPointerUp(e) {
-            if (!isDragging) return;
+        document.addEventListener("mouseup", () => {
             isDragging = false;
             document.body.style.userSelect = "";
-            try { header.releasePointerCapture(e.pointerId); } catch (_) {}
-            e.stopPropagation();
-        }
-
-        // 用 capture 阶段挂在 header 上,优先级高于 GeoFS 的 document 监听
-        header.addEventListener("pointerdown", onPointerDown, true);
-        header.addEventListener("pointermove", onPointerMove, true);
-        header.addEventListener("pointerup", onPointerUp, true);
-        header.addEventListener("pointercancel", onPointerUp, true);
-
-        // 顺手把整个面板内的 mouse/wheel 都拦下来,
-        // 防止你在面板里操作时不小心驱动了飞机
-        const swallow = (e) => e.stopPropagation();
-        el.addEventListener("mousedown", swallow, true);
-        el.addEventListener("mouseup", swallow, true);
-        el.addEventListener("mousemove", swallow, true);
-        el.addEventListener("wheel", swallow, true);
-        el.addEventListener("contextmenu", swallow, true);
+        });
     }
 
     function readConfigFromUI() {
@@ -545,6 +518,12 @@
                 return;
             }
 
+            if (msg.type === "flight_plan" && CONFIG.mode === "copilot") {
+                LATEST_RECEIVED_FLIGHT_PLAN = Array.isArray(msg.data) ? msg.data : null;
+                LATEST_RECEIVED_FLIGHT_PLAN_TS = now();
+                return;
+            }
+
             if (msg.type === "error") {
                 alert("Server error: " + msg.message);
             }
@@ -575,6 +554,9 @@
         STATE.latestHostStateTs = 0;
         STATE.latestCopilotControls = null;
         STATE.latestCopilotControlsTs = 0;
+        LATEST_RECEIVED_FLIGHT_PLAN = null;
+        LATEST_RECEIVED_FLIGHT_PLAN_TS = 0;
+        LAST_FLIGHT_PLAN_HASH_SENT = "";
         updateStatus();
     }
 
@@ -644,6 +626,98 @@
                 throttle: safeGet(() => controls.throttle, 0)
             } : null
         };
+    }
+
+    /*************************************************
+     * Flight Plan helpers (GeoFS API discovery)
+     *************************************************/
+    function getFlightPlanController() {
+        return safeGet(() => geofs.flightPlan, null)
+            || safeGet(() => geofs.api?.flightPlan, null)
+            || safeGet(() => geofs.nav?.flightPlan, null);
+    }
+
+    function getFlightPlanArray() {
+        const fp = getFlightPlanController();
+        if (!fp) return null;
+        const candidates = ["flightPlan", "route", "waypoints", "_flightPlan"];
+        for (const key of candidates) {
+            const v = safeGet(() => fp[key], null);
+            if (Array.isArray(v)) return v;
+        }
+        return null;
+    }
+
+    function callFlightPlanRefresh() {
+        const fp = getFlightPlanController();
+        const nav = safeGet(() => geofs.nav, null);
+        const fnNames = [
+            "update", "refresh", "redraw", "draw",
+            "drawRoute", "computeAll", "computeRoute",
+            "compute", "render"
+        ];
+
+        for (const target of [fp, nav]) {
+            if (!target) continue;
+            for (const name of fnNames) {
+                try {
+                    if (typeof target[name] === "function") target[name]();
+                } catch (_) {}
+            }
+        }
+    }
+
+    function normalizeWaypoint(wp) {
+        if (!wp || typeof wp !== "object") return null;
+        if (typeof wp.lat !== "number" || typeof wp.lon !== "number") return null;
+        return {
+            ident:   wp.ident   ?? null,
+            type:    wp.type    ?? null,
+            lat:     wp.lat,
+            lon:     wp.lon,
+            alt:     wp.alt     ?? null,
+            spd:     wp.spd     ?? null,
+            heading: wp.heading ?? null
+        };
+    }
+
+    function snapshotFlightPlan() {
+        const arr = getFlightPlanArray();
+        if (!Array.isArray(arr)) return null;
+        const out = [];
+        for (const wp of arr) {
+            const n = normalizeWaypoint(wp);
+            if (n) out.push(n);
+        }
+        return out;
+    }
+
+    function applyFlightPlanFromHost(planArr) {
+        if (!Array.isArray(planArr)) return false;
+
+        const fp = getFlightPlanController();
+        if (!fp) return false;
+
+        const currentArr = getFlightPlanArray();
+
+        try {
+            if (Array.isArray(currentArr)) {
+                // Mutate in place to preserve any internal references
+                currentArr.length = 0;
+                for (const wp of planArr) {
+                    currentArr.push({ ...wp });
+                }
+            } else {
+                // Fallback: direct assignment
+                fp.flightPlan = planArr.map(wp => ({ ...wp }));
+            }
+        } catch (e) {
+            warn("applyFlightPlanFromHost failed:", e);
+            return false;
+        }
+
+        callFlightPlanRefresh();
+        return true;
     }
 
     /*************************************************
@@ -920,6 +994,51 @@
     }
 
     /*************************************************
+     * Copilot flight plan UI lockout
+     *************************************************/
+    let COPILOT_FP_LOCK_STYLE = null;
+
+    function ensureCopilotFlightPlanUiLock() {
+        const shouldLock =
+            CONFIG.mode === "copilot" &&
+            CONFIG.lockCopilotFlightPlanUi &&
+            STATE.joined;
+
+        if (!shouldLock) {
+            if (COPILOT_FP_LOCK_STYLE) {
+                COPILOT_FP_LOCK_STYLE.remove();
+                COPILOT_FP_LOCK_STYLE = null;
+            }
+            return;
+        }
+
+        if (COPILOT_FP_LOCK_STYLE) return;
+
+        COPILOT_FP_LOCK_STYLE = document.createElement("style");
+        COPILOT_FP_LOCK_STYLE.id = "gdc-copilot-fp-lock";
+        COPILOT_FP_LOCK_STYLE.textContent = `
+            /* Disable GeoFS flight plan editor inputs on copilot side */
+            .geofs-flightPlan input,
+            .geofs-flightPlan select,
+            .geofs-flightPlan button,
+            .geofs-flightPlan textarea,
+            .geofs-flightplan-list input,
+            .geofs-flightplan-list select,
+            .geofs-flightplan-list button,
+            [class*="flight-plan"] input,
+            [class*="flight-plan"] button,
+            [class*="flightPlan"]:not(.gdc-root) input,
+            [class*="flightPlan"]:not(.gdc-root) button {
+                pointer-events: none !important;
+                opacity: 0.55 !important;
+                cursor: not-allowed !important;
+                filter: grayscale(0.6);
+            }
+        `;
+        document.head.appendChild(COPILOT_FP_LOCK_STYLE);
+    }
+
+    /*************************************************
      * Loops
      *************************************************/
     function startPingLoop() {
@@ -993,6 +1112,40 @@
         }, CONFIG.remoteHideIntervalMs);
     }
 
+    function startHostFlightPlanSendLoop() {
+        setInterval(() => {
+            if (CONFIG.mode !== "host" || !CONFIG.syncFlightPlanToCopilot) return;
+            if (!STATE.joined || !isGeoFSReady()) return;
+
+            const snapshot = snapshotFlightPlan();
+            if (!snapshot) return;
+
+            const hash = JSON.stringify(snapshot);
+            if (hash === LAST_FLIGHT_PLAN_HASH_SENT) return;
+
+            LAST_FLIGHT_PLAN_HASH_SENT = hash;
+            wsSend({
+                type: "flight_plan",
+                data: snapshot
+            });
+        }, CONFIG.flightPlanSendIntervalMs);
+    }
+
+    function startCopilotFlightPlanApplyLoop() {
+        setInterval(() => {
+            if (CONFIG.mode !== "copilot" || !CONFIG.syncFlightPlanToCopilot) return;
+            if (!STATE.joined || !isGeoFSReady()) return;
+            if (!LATEST_RECEIVED_FLIGHT_PLAN) return;
+
+            // Forced re-apply: even if the copilot edits the plan, snap back to host's version
+            applyFlightPlanFromHost(LATEST_RECEIVED_FLIGHT_PLAN);
+        }, CONFIG.flightPlanApplyIntervalMs);
+    }
+
+    function startCopilotFpLockLoop() {
+        setInterval(ensureCopilotFlightPlanUiLock, 1000);
+    }
+
     function startUiLoop() {
         setInterval(updateStatus, 300);
     }
@@ -1013,6 +1166,11 @@
             startCopilotApplyLoop();
             startRemoteModelHideLoop();
             startUiLoop();
+
+            // Flight plan sync
+            startHostFlightPlanSendLoop();
+            startCopilotFlightPlanApplyLoop();
+            startCopilotFpLockLoop();
 
             log("UI ready");
         }, 200);
