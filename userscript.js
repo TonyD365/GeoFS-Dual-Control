@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Dual Control Final
 // @namespace    geofs.dual.control.final
-// @version      5.3.1
+// @version      5.3.2
 // @description  Host/Copilot dual control for GeoFS on HF Space (+ flight plan sync)
 // @match        https://www.geofs.com/*
 // @match        http://www.geofs.com/*
@@ -105,6 +105,13 @@
     const COPILOT_REMOTE_ACTIVITY_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, 0]));
 
     const COPILOT_LAST_VALUES_ON_HOST = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
+
+    // Host self-movement detection.
+    // HOST_LAST_SEEN_VALUES: last observed local control value (to detect human input).
+    // HOST_VALUE_APPLIED_BY_COPILOT: last value the script wrote on behalf of the copilot,
+    // so a script-driven change is NOT mistaken for the host physically moving the channel.
+    const HOST_LAST_SEEN_VALUES = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
+    const HOST_VALUE_APPLIED_BY_COPILOT = Object.fromEntries(CHANNEL_KEYS.map(k => [k, null]));
 
     // Flight plan sync state
     let LAST_FLIGHT_PLAN_HASH_SENT = "";
@@ -776,6 +783,33 @@
         }
     }
 
+    // Detect that the HOST physically moved a channel (e.g. dragged the mobile
+    // throttle slider). This is independent of the copilot's value, which fixes
+    // the feedback loop where applying the copilot's value made host == copilot
+    // and prevented the host from ever (re)claiming ownership of the channel.
+    function updateHostSelfMovement() {
+        const local = getLocalDirectControls();
+        const t = now();
+
+        for (const key of CHANNEL_KEYS) {
+            const cur = local[key];
+            const prev = HOST_LAST_SEEN_VALUES[key];
+
+            if (
+                prev !== null &&
+                cur != null &&
+                valuesDifferByChannel(key, prev, cur) &&
+                // Ignore changes that the script itself just applied for the copilot.
+                !(HOST_VALUE_APPLIED_BY_COPILOT[key] != null &&
+                  !valuesDifferByChannel(key, cur, HOST_VALUE_APPLIED_BY_COPILOT[key]))
+            ) {
+                HOST_LOCAL_ACTIVITY[key] = t;
+            }
+
+            HOST_LAST_SEEN_VALUES[key] = cur;
+        }
+    }
+
     function updateCopilotOwnershipAgainstHostVisuals() {
         const local = getLocalDirectControls();
         const remote = STATE.latestHostState?.visualInputs || null;
@@ -865,6 +899,10 @@
 
         try {
             applyFn(value);
+            // Remember what the script wrote so updateHostSelfMovement() does not
+            // mistake this script-driven change for the host moving the channel.
+            HOST_VALUE_APPLIED_BY_COPILOT[key] = value;
+            HOST_LAST_SEEN_VALUES[key] = value;
         } catch (e) {
             warn("apply control failed:", key, e);
         }
@@ -1096,6 +1134,7 @@
             if (CONFIG.mode !== "host") return;
             if (!STATE.joined || !isGeoFSReady()) return;
 
+            updateHostSelfMovement();
             updateHostOwnershipAgainstCopilot();
 
             const packet = getHostStatePacket();
@@ -1126,6 +1165,10 @@
     function startHostApplyLoop() {
         function tick() {
             if (CONFIG.mode === "host" && STATE.joined && isGeoFSReady() && STATE.latestCopilotControls) {
+                // Detect the host's own input BEFORE applying copilot controls,
+                // otherwise the apply step overwrites controls.throttle and the
+                // host's physical input is never observed (mobile throttle bug).
+                updateHostSelfMovement();
                 updateHostOwnershipAgainstCopilot();
                 applyCopilotControlsToHost(STATE.latestCopilotControls);
             }

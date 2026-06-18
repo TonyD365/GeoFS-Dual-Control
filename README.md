@@ -1,4 +1,14 @@
-## Please note: If the mobile device is the host device, the host device will not be able to control the throttle! Could someone please help me fix this? Just open a pull request. Thank you!
+## ✅ Fixed: mobile host throttle control
+
+> Previously, when the **mobile device was the host**, the host could not control the throttle.
+> The throttle was being continuously overwritten by the copilot's value because host ownership
+> was inferred only by comparing the host's value against the copilot's. Once the copilot's value
+> was applied (making host == copilot), the host never reclaimed ownership, and on mobile the
+> "set-and-release" throttle slider could never win the race against the apply loop.
+>
+> This is now fixed by adding **host self-movement detection**: the host claims ownership of a
+> channel whenever it physically moves it (detected *before* copilot controls are applied), while
+> script-applied copilot values are explicitly ignored so they aren't mistaken for host input.
 
 ---
 
